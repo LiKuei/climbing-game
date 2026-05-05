@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>爬山</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser-arcade-physics.min.js"></script>
+    <style>
+        body { margin: 0; background-color: #0a0a0a; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+        canvas { border: 2px solid #333; }
+    </style>
+</head>
+<body>
+
+<script>
+class MainScene extends Phaser.Scene {
+    constructor() {
+        super('MainScene');
+        this.chargePower = 0;
+        this.maxCharge = 800;
+        this.isCharging = false;
+        this.lastDir = 0;
+    }
+
+    preload() {
+        // --- 載入 Monochrome 1-Bit 透明素材 ---
+        // 註：如果你打開資料夾發現喜歡別的圖案，可以直接改後面的數字
+        
+        // 主角 (找一個看起來像小機器人或史萊姆的圖案)
+        this.load.image('player', 'Tiles/Transparent/tile_0260.png'); 
+        
+        // 平台材質 (可以挑選幾種不同的方塊來做層次)
+        this.load.image('plat_base', 'Tiles/Transparent/tile_0000.png'); // 基本方塊
+        this.load.image('plat_pipe', 'Tiles/Transparent/tile_0073.png'); // 管子或金屬
+        this.load.image('plat_tech', 'Tiles/Transparent/tile_0085.png'); // 科技感方塊
+        
+        // 終點 (找一個像寶箱或旗幟的)
+        this.load.image('goal', 'Tiles/Transparent/tile_0108.png'); 
+    }
+
+    create() {
+        this.chargePower = 0;
+        this.isCharging = false;
+        this.lastDir = 0;
+        this.won = false;
+        this.bestY = Infinity;
+
+        const worldHeight = 5500;
+        this.worldHeight = worldHeight;
+        this.physics.world.setBounds(0, 0, 800, worldHeight);
+        this.cameras.main.setBounds(0, 0, 800, worldHeight);
+
+        // --- 黑白風格背景裝飾 ---
+        // 我們可以用程式碼隨機產生一些「白色像素雜訊」當作星空
+        for(let i=0; i<150; i++) {
+            let x = Phaser.Math.Between(0, 800);
+            let y = Phaser.Math.Between(0, worldHeight);
+            let alpha = Phaser.Math.FloatBetween(0.2, 0.8);
+            this.add.rectangle(x, y, 2, 2, 0xffffff).setAlpha(alpha).setScrollFactor(0.3);
+        }
+
+        // --- 建立玩家 ---
+        // 放大 2.5 倍，因為 1-bit 素材通常只有 16x16，放大後像素感更強烈
+        this.player = this.physics.add.sprite(400, worldHeight - 100, 'player').setScale(2.5);
+        this.player.body.setCollideWorldBounds(true);
+        this.player.body.setDragX(200);
+        this.player.body.setBounceX(0.8);
+
+        // ==========================================
+        // 1. 建立關卡平台 (加入底板顏色，解決隱形問題)
+        // ==========================================
+        const platforms = this.physics.add.staticGroup();
+        
+        // 底層大地面
+        this.add.rectangle(400, worldHeight - 10, 800, 32, 0x222222).setStrokeStyle(2, 0xffffff);
+        const ground = this.add.tileSprite(400, worldHeight - 10, 400, 16, 'plat_base').setScale(2);
+        platforms.add(ground);
+        ground.body.setSize(800, 32);
+
+        const layout = [
+            // 底層
+            { x: 300, y: 5300, w: 220 }, { x: 580, y: 5120, w: 180 }, { x: 260, y: 4940, w: 170 },
+            { x: 560, y: 4760, w: 170 }, { x: 320, y: 4580, w: 240 }, { x: 600, y: 4400, w: 140 },
+            { x: 220, y: 4220, w: 140 }, { x: 540, y: 4040, w: 140 }, { x: 270, y: 3860, w: 130 },
+            { x: 400, y: 3680, w: 260 }, // 休息點 1
+            
+            // 中層
+            { x: 150, y: 3500, w: 120 }, { x: 600, y: 3320, w: 120 },
+            { x: 260, y: 3140, w: 120 }, { x: 560, y: 2960, w: 120 }, { x: 220, y: 2780, w: 120 },
+            { x: 400, y: 2600, w: 260 }, // 休息點 2
+            
+            // 高層 (你原本卡住的地方)
+            { x: 150, y: 2420, w: 110 },
+            { x: 480, y: 2240, w: 130 }, // 調整：向左靠攏，加寬一點點
+            { x: 260, y: 2060, w: 120 }, // 調整：3269m 處的平台，現在距離合理多了
+            
+            // 逼近外太空
+            { x: 560, y: 1880, w: 110 }, { x: 220, y: 1700, w: 110 },
+            { x: 540, y: 1520, w: 110 }, { x: 270, y: 1340, w: 110 }, { x: 560, y: 1160, w: 110 },
+            { x: 320, y: 980,  w: 140 }, 
+            
+            // --- 這裡開始是為你搭建的最後階梯 (修復物理極限 Bug) ---
+            { x: 520, y: 800,  w: 120 }, // 倒數第三階 (靠右)
+            { x: 200, y: 620,  w: 120 }, // 倒數第二階 (移到畫面最左側)
+            { x: 620, y: 440,  w: 120 }, // 登頂前最後一跳 (移到畫面最右側，完全避開屋簷)
+            { x: 400, y: 260,  w: 200 }  // 塔頂終點 (寬度從 300 稍微縮小為 200)
+        ];
+
+        for (const p of layout) {
+            let tex = 'plat_base';
+            if (p.y < 2000) tex = 'plat_tech';
+            else if (p.y < 4000) tex = 'plat_pipe';
+
+            // 關鍵解法：先畫一個帶白色邊框的深灰方塊當底，讓黑色材質能顯現出來
+            this.add.rectangle(p.x, p.y, p.w, 32, 0x222222).setStrokeStyle(2, 0xffffff);
+
+            let plat = this.add.tileSprite(p.x, p.y, p.w / 2, 16, tex).setScale(2);
+            platforms.add(plat);
+            plat.body.setSize(p.w, 32); 
+        }
+
+        this.physics.add.collider(this.player, platforms);
+
+        // ==========================================
+        // 2. 終點 (加入黃金底座與發光特效)
+        // ==========================================
+        
+        // 1. 先在背後畫一個金黃色的底座方塊
+        this.goalBackground = this.add.rectangle(400, 240, 48, 48, 0xf1c40f).setStrokeStyle(3, 0xffffff);
+
+        // 2. 加入一點「呼吸閃爍」的動畫，讓它看起來像重要的破關點
+        this.tweens.add({
+            targets: this.goalBackground,
+            alpha: 0.5,
+            duration: 800,
+            yoyo: true,
+            repeat: -1
+        });
+
+        // 3. 放上原本黑色的終點圖案 (不需要 setTint 了)
+        this.goal = this.physics.add.staticSprite(400, 240, 'goal').setScale(3);
+        this.goal.refreshBody(); 
+
+        // 4. 碰撞判定
+        this.physics.add.overlap(this.player, this.goal, () => {
+            if (!this.won) {
+                this.won = true;
+                this.player.body.setVelocity(0, 0);
+                
+                // 破關時，把主角強制變成亮黃色以示慶祝！
+                this.player.setTintFill(0xf1c40f); 
+                
+                this.winText.setVisible(true);
+            }
+        });
+
+        // UI 設計也改成純粹的復古電子字體風格
+        this.uiText = this.add.text(20, 20, 'PWR: 0%', { fontSize: '20px', fill: '#fff', fontFamily: 'monospace' }).setScrollFactor(0);
+        this.chargeBar = this.add.rectangle(20, 50, 0, 8, 0xff0033).setOrigin(0).setScrollFactor(0);
+        this.statsText = this.add.text(20, 70, 'ALT: 0m', { fontSize: '16px', fill: '#aaa', fontFamily: 'monospace' }).setScrollFactor(0);
+        this.startY = worldHeight - 100; 
+
+        this.winText = this.add.text(400, 300, '>>> SYSTEM OVERRIDE <<<\nMISSION COMPLETE\n[PRESS R]', { fontSize: '32px', fill: '#fff', align: 'center', fontFamily: 'monospace', backgroundColor: '#000' })
+            .setOrigin(0.5).setScrollFactor(0).setVisible(false);
+
+        this.cursors = this.input.keyboard.createCursorKeys();
+        this.keyR = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
+
+        this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+    }
+
+    update() {
+        if (Phaser.Input.Keyboard.JustDown(this.keyR)) {
+            this.scene.restart();
+            return;
+        }
+
+        if (this.won) return;
+
+        const onGround = this.player.body.blocked.down && this.player.body.velocity.y >= 0;
+        if (this.player.y < this.bestY) this.bestY = this.player.y;
+
+        if (this.cursors.left.isDown) this.lastDir = -1;
+        else if (this.cursors.right.isDown) this.lastDir = 1;
+        else if (onGround && !this.isCharging) this.lastDir = 0;
+
+        if (onGround) {
+            this.player.clearTint(); // 落地時恢復純黑白
+
+            if (this.cursors.space.isDown) {
+                this.isCharging = true;
+                this.chargePower = Math.min(this.chargePower + 15, this.maxCharge);
+                this.player.body.setVelocityX(0);
+
+                // 黑白紅美學：蓄力時變成霓虹血紅
+                if (this.chargePower >= this.maxCharge) this.player.setTint(0xffffff); // 滿力瞬間閃白
+                else this.player.setTint(0xff0033); // 蓄力紅
+                
+                this.player.setScale(2.5, 2.5 - (this.chargePower / this.maxCharge) * 0.8);
+
+            } else if (this.isCharging) {
+                const horizontalMultiplier = 0.5; 
+                const inputDir = this.cursors.left.isDown ? -1 : (this.cursors.right.isDown ? 1 : this.lastDir);
+                const jumpX = this.chargePower * horizontalMultiplier * inputDir;
+
+                this.player.body.setVelocityY(-this.chargePower);
+                this.player.body.setVelocityX(jumpX);
+                
+                this.player.setData('isVerticalJump', jumpX === 0);
+
+                this.isCharging = false;
+                this.chargePower = 0;
+                this.player.setScale(2.5, 2.5); 
+                this.lastDir = 0; 
+            } else {
+                if (this.cursors.left.isDown) {
+                    this.player.body.setVelocityX(-160);
+                    this.player.setFlipX(false);
+                }
+                else if (this.cursors.right.isDown) {
+                    this.player.body.setVelocityX(160);
+                    this.player.setFlipX(true);
+                }
+                else this.player.body.setVelocityX(0);
+            }
+        } else {
+            // 空中狀態：稍微變暗
+            this.player.setTint(0x7f8c8d);
+            
+            if (this.player.getData('isVerticalJump') && this.player.body.velocity.x === 0) {
+                if (this.cursors.left.isDown) this.player.body.setVelocityX(-160);
+                else if (this.cursors.right.isDown) this.player.body.setVelocityX(160);
+            }
+        }
+
+        // 更新 UI
+        const percent = Math.floor((this.chargePower / this.maxCharge) * 100);
+        this.uiText.setText(`PWR: ${percent}% ${this.lastDir !== 0 ? (this.lastDir > 0 ? '>>' : '<<') : ''}`);
+        this.chargeBar.width = percent * 2;
+        const heightClimbed = Math.max(0, Math.floor(this.startY - this.bestY));
+        this.statsText.setText(`ALT: ${heightClimbed}m`);
+    }
+}
+
+const config = {
+    type: Phaser.AUTO,
+    width: 800,
+    height: 600,
+    backgroundColor: '#0f0f0f', // 極深灰背景
+    physics: {
+        default: 'arcade',
+        arcade: { gravity: { y: 1200 }, debug: false }
+    },
+    scene: MainScene,
+    pixelArt: true 
+};
+
+const game = new Phaser.Game(config);
+</script>
+
+</body>
+</html>
